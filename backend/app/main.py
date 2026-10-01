@@ -188,10 +188,13 @@ def retry_recording(recording_id: str, db: Session = Depends(get_db)) -> UploadA
 
 @app.delete("/api/recordings/{recording_id}", status_code=204)
 def delete_recording(recording_id: str, db: Session = Depends(get_db)) -> None:
-    """Remove the row (chunks cascade) and the stored audio."""
+    """Remove the row (chunks cascade) and the stored audio. Refused while a
+    worker is mid-job, so the worker never writes into a row that vanished."""
     recording = db.get(Recording, recording_id)
     if recording is None:
         raise HTTPException(404, "Recording not found.")
+    if recording.status in Status.ACTIVE:
+        raise HTTPException(409, "This recording is being processed. Delete it once it has finished or failed.")
     if recording.storage_path:
         storage.delete(recording.storage_path)
     db.delete(recording)
