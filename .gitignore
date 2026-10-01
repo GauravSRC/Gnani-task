@@ -26,3 +26,5 @@ Thumbs.db
 # Scratch
 tmp/
 *.log
+samples/
+scratch_*.py
