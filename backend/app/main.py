@@ -21,6 +21,9 @@ from app.db import get_db
 from app.models import Recording, Status, SUPPORTED_LANGUAGES
 from app.schemas import UploadAccepted
 
+from datetime import datetime, timezone
+from app.schemas import RecordingDetail, RecordingSummary
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
@@ -130,3 +133,66 @@ async def create_recording(
 
     log.info("queued %s (%s, %d bytes)", recording.id, recording.filename, len(data))
     return UploadAccepted(id=recording.id, status=recording.status)
+
+@app.get("/api/recordings", response_model=list[RecordingSummary])
+def list_recordings(limit: int = 50, db: Session = Depends(get_db)) -> list[Recording]:
+    """Past uploads, newest first. No auth, so this is every upload on the
+    instance — a real deployment would scope it to a user."""
+    return (
+        db.query(Recording)
+        .order_by(Recording.created_at.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
+
+
+@app.get("/api/recordings/{recording_id}", response_model=RecordingDetail)
+def get_recording(recording_id: str, db: Session = Depends(get_db)) -> RecordingDetail:
+    """Detail view. The frontend polls this while a job runs, which is why it
+    returns partial chunk text and a progress percentage, not just the final
+    transcript."""
+    recording = db.get(Recording, recording_id)
+    if recording is None:
+        raise HTTPException(404, "Recording not found.")
+
+    detail = RecordingDetail.model_validate(recording)
+    # Only mint a signed URL once there is something worth playing back.
+    if recording.storage_path:
+        detail.audio_url = storage.signed_url(recording.storage_path)
+    return detail
+
+
+@app.post("/api/recordings/{recording_id}/retry", response_model=UploadAccepted)
+def retry_recording(recording_id: str, db: Session = Depends(get_db)) -> UploadAccepted:
+    """Requeue a failed job.
+
+    Chunk rows are deliberately left alone: chunks already transcribed keep
+    their text, so a retry resumes rather than re-billing the whole file.
+    """
+    recording = db.get(Recording, recording_id)
+    if recording is None:
+        raise HTTPException(404, "Recording not found.")
+    if recording.status != Status.FAILED:
+        raise HTTPException(409, f"Only failed recordings can be retried (this one is '{recording.status}').")
+
+    recording.status = Status.QUEUED
+    recording.stage_detail = "Requeued after failure"
+    recording.error_message = None
+    recording.finished_at = None
+    recording.heartbeat_at = None
+    db.commit()
+
+    log.info("requeued %s", recording.id)
+    return UploadAccepted(id=recording.id, status=recording.status)
+
+
+@app.delete("/api/recordings/{recording_id}", status_code=204)
+def delete_recording(recording_id: str, db: Session = Depends(get_db)) -> None:
+    """Remove the row (chunks cascade) and the stored audio."""
+    recording = db.get(Recording, recording_id)
+    if recording is None:
+        raise HTTPException(404, "Recording not found.")
+    if recording.storage_path:
+        storage.delete(recording.storage_path)
+    db.delete(recording)
+    db.commit()
