@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import imageio_ffmpeg
+import numpy as np
 
 log = logging.getLogger("audio")
 
@@ -53,6 +54,9 @@ def to_wav(src: Path, dst: Path) -> float:
     ffmpeg comes from the imageio-ffmpeg wheel, which bundles a static binary
     for Windows and Linux, so nothing has to be installed system-wide.
     """
+    if not src.exists():
+        log.error("source file missing: %s", src)
+        raise AudioError("The audio file could not be read.")
     cmd = [
         imageio_ffmpeg.get_ffmpeg_exe(),
         "-nostdin",
@@ -136,9 +140,31 @@ def split_wav(wav_path: Path, out_dir: Path, max_seconds: float) -> list[ChunkSp
 
 # --------------------------------------------------------------------------- cut selection
 
-def _choose_cut(src: wave.Wave_read, start: int, limit: int, rate: int) -> int:
-    """Pick the frame where the current chunk ends.
+# A chunk boundary should fall in a pause, not mid-word. Within the last
+# SEARCH_SECONDS before the limit, measure loudness in short windows and cut
+# in the quietest one. 100 ms windows favour real pauses (between phrases,
+# breaths) over the brief silences inside words, such as the closure before "p".
+SEARCH_SECONDS = 10.0
+WINDOW_MS = 100
 
-    Fixed-length for now: take everything up to the limit.
+
+def _choose_cut(src: wave.Wave_read, start: int, limit: int, rate: int) -> int:
+    """Return the frame where the current chunk should end: the middle of the
+    quietest 100 ms window in the 10 s before `limit`.
+
+    On ties (a long silence), the latest quiet window wins. That keeps chunks
+    long, which means fewer API calls. It's a heuristic: if someone talks for
+    10 s without pausing, it degrades to a cut no worse than a fixed one.
     """
-    return limit
+    search_from = max(start + 1, limit - int(SEARCH_SECONDS * rate))
+    src.setpos(search_from)
+    samples = np.frombuffer(src.readframes(limit - search_from), dtype="<i2").astype(np.float32)
+
+    hop = rate * WINDOW_MS // 1000
+    windows = len(samples) // hop
+    if windows == 0:
+        return limit
+
+    rms = np.sqrt(np.mean(samples[: windows * hop].reshape(windows, hop) ** 2, axis=1))
+    quietest = windows - 1 - int(np.argmin(rms[::-1]))
+    return search_from + quietest * hop + hop // 2
