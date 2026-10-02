@@ -7,6 +7,7 @@ never run anywhere but the backend.
 """
 
 import logging
+import time
 
 import httpx
 
@@ -55,10 +56,22 @@ def download(path: str) -> bytes:
     return resp.content
 
 
+# A signed URL is good for an hour, but the detail endpoint is polled every
+# two seconds while a job runs. Caching them turns ~30 sign requests a minute
+# into one an hour per recording.
+_URL_CACHE: dict[str, tuple[str, float]] = {}
+_URL_REUSE_SECONDS = 3000  # under the 3600 s expiry, with room to spare
+
+
 def signed_url(path: str, expires_in: int = 3600) -> str | None:
     """Time-limited public link, so the browser can play private audio back
     without the frontend ever holding a Supabase key. Returns None on failure —
     a missing player is not worth failing the whole detail request over."""
+    now = time.monotonic()
+    cached = _URL_CACHE.get(path)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
     try:
         resp = httpx.post(
             f"{_ROOT}/object/sign/{_BUCKET}/{path}",
@@ -74,14 +87,20 @@ def signed_url(path: str, expires_in: int = 3600) -> str | None:
         relative = body.get("signedURL") or body.get("signedUrl")
         if not relative:
             return None
-        return f"{_ROOT}{relative}" if relative.startswith("/") else f"{_ROOT}/{relative}"
+        url = f"{_ROOT}{relative}" if relative.startswith("/") else f"{_ROOT}/{relative}"
     except httpx.HTTPError as exc:
         log.warning("sign error: %s", exc)
         return None
 
+    if len(_URL_CACHE) > 500:
+        _URL_CACHE.clear()  # one process, one bounded cache; no eviction policy needed
+    _URL_CACHE[path] = (url, now + _URL_REUSE_SECONDS)
+    return url
+
 
 def delete(path: str) -> None:
     """Best-effort cleanup; never raises into a request path."""
+    _URL_CACHE.pop(path, None)
     try:
         httpx.delete(f"{_ROOT}/object/{_BUCKET}/{path}", headers=_AUTH, timeout=20.0)
     except httpx.HTTPError as exc:

@@ -18,11 +18,15 @@ from starlette.concurrency import run_in_threadpool
 
 from app import storage
 from app.db import get_db
-from app.models import Recording, Status, SUPPORTED_LANGUAGES
+from app.models import Recording, Status, SUPPORTED_LANGUAGES, new_id
 from app.schemas import UploadAccepted
 
 from datetime import datetime, timezone
 from app.schemas import RecordingDetail, RecordingSummary
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +53,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(SQLAlchemyError)
+async def database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    """The database can be briefly unreachable: a dropped connection, a DNS
+    hiccup, or a paused free-tier project. Answer with a sentence the UI can
+    show rather than a stack trace, and keep the real cause in the log."""
+    log.error("database error on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The database isn’t reachable right now. Try again in a moment."},
+    )
 
 
 @app.get("/health")
@@ -109,7 +124,11 @@ async def create_recording(
     if len(data) < 1024:
         raise HTTPException(400, "File is empty or too small to contain audio.")
 
+    # The id is generated here, in Python, rather than by the database,
+    # because the storage path is built from it before the row is inserted.
+    # A database-side default would still be None at this point.
     recording = Recording(
+        id=new_id(),
         filename=(file.filename or "recording")[:255],
         content_type=file.content_type or "",
         size_bytes=len(data),
@@ -180,6 +199,7 @@ def retry_recording(recording_id: str, db: Session = Depends(get_db)) -> UploadA
     recording.error_message = None
     recording.finished_at = None
     recording.heartbeat_at = None
+    recording.attempts = 0  # a manual retry is a fresh start, not a 4th interruption
     db.commit()
 
     log.info("requeued %s", recording.id)
