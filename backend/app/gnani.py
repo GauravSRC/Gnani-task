@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 
 import httpx
@@ -33,6 +34,21 @@ MAX_BACKOFF_SECONDS = 30.0
 # chunks. The read timeout is generous for a 30 s clip; the connect timeout is
 # short so an unreachable host fails fast.
 _client = httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0))
+# Requests are spaced out rather than fired as fast as chunks are ready.
+# Sending two back to back returns 429, and recovering from that costs more
+# than the wait would have. The lock keeps the gap correct if the worker is
+# ever run with more than one thread.
+_pace_lock = threading.Lock()
+_last_request_at = 0.0
+
+
+def _wait_for_slot() -> None:
+    global _last_request_at
+    with _pace_lock:
+        gap = time.monotonic() - _last_request_at
+        if gap < settings.gnani_min_gap_seconds:
+            time.sleep(settings.gnani_min_gap_seconds - gap)
+        _last_request_at = time.monotonic()
 
 
 class GnaniError(Exception):
@@ -56,6 +72,7 @@ def transcribe(audio_bytes: bytes, language_code: str, filename: str = "chunk.wa
     problem = "unknown error"
     for attempt in range(1, MAX_ATTEMPTS + 1):
         wait: float | None = None
+        _wait_for_slot()
         try:
             resp = _client.post(
                 settings.gnani_stt_url,

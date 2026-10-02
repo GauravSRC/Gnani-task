@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Gnani ASR
     gnani_api_key: str = ""
     gnani_stt_url: str = "https://api.vachana.ai/stt/v3"
+    # Gnani rate-limits per key. Spacing requests is cheaper than absorbing a
+    # 429 and waiting out the backoff.
+    gnani_min_gap_seconds: float = 1.1
 
     # LLM
     gemini_api_key: str = ""

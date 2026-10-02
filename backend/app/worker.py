@@ -170,6 +170,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)-8s %(name)s | %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # The SDK warns about automatic function calling on every call; we use no tools.
+    logging.getLogger("google_genai.models").setLevel(logging.ERROR)
     try:
         run_forever()
     except KeyboardInterrupt:
