@@ -1,0 +1,3 @@
+# Shell scripts run on Linux (Render). A Windows CRLF line ending would make
+# bash fail with "$'\r': command not found", so always store them with LF.
+*.sh text eol=lf

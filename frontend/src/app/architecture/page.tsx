@@ -189,7 +189,8 @@ export default function ArchitecturePage() {
             ["Gnani 429, 5xx or timeout", "Up to four attempts, waiting 2 s, 4 s then 8 s", "Progress simply continues"],
             ["Gnani 400 or 403", "Stops at once; retrying cannot fix a bad key or a rejected file", "The reason, and which part it stopped on"],
             ["Summary fails", "The transcript is already saved", "Transcript plus a Retry that only redoes the summary"],
-            ["Worker killed mid-job", "The heartbeat goes stale and the job is requeued; finished parts are kept", "Progress pauses, then continues from the next part"],
+            ["Server restarts or redeploys", "The worker finishes the part in flight, saves its place and puts the job back in the queue", "A short pause, then progress continues from the next part"],
+            ["Worker killed without warning", "No heartbeat for 15 minutes, so the job is requeued; finished parts are kept", "A longer pause, then progress continues from the next part"],
             ["Backend asleep", "The page keeps checking until it answers", "“Connecting to the server… up to a minute”"],
           ]}
         />
