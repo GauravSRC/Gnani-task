@@ -3,7 +3,9 @@ and the database schema can change independently."""
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
+
+from app.models import SUPPORTED_LANGUAGES
 
 
 class ChunkOut(BaseModel):
@@ -29,6 +31,15 @@ class RecordingSummary(BaseModel):
     status: str
     progress_percent: int
     created_at: datetime
+    # Bumped by every worker commit, so the UI can show "last update" and
+    # tell a slow job from a stuck one.
+    updated_at: datetime
+
+    @computed_field
+    @property
+    def language_label(self) -> str:
+        """Display name, so the language list lives only on the backend."""
+        return SUPPORTED_LANGUAGES.get(self.language_code, self.language_code)
 
 
 class RecordingDetail(RecordingSummary):
