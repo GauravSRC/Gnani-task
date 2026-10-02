@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* Design tokens. Each colour has one job: signal = actions and finished
+   work, meter = work in progress (like a VU meter), alarm = failure. */
+@theme {
+  --color-paper: #f5f7f6;
+  --color-ink: #1c2833;
+  --color-graphite: #56616c;
+  --color-rule: #d6dce1;
+  --color-signal: #0b7a71;
+  --color-signal-soft: #e2f1ee;
+  --color-meter: #c4801a;
+  --color-meter-soft: #fbf0dd;
+  --color-alarm: #b3242d;
+  --color-alarm-soft: #fbe9e9;
+}
+
+/* Sans for operating the interface, serif for reading what was said. */
+@theme inline {
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-source-serif), ui-serif, Georgia, serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+:focus-visible {
+  outline: 2px solid #0b7a71;
+  outline-offset: 2px;
+}
