@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { IBM_Plex_Sans, Source_Serif_4 } from "next/font/google";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import ServerStatus from "@/components/ServerStatus";
 
 import "./globals.css";
 
@@ -42,6 +43,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
             </div>
           </nav>
         </header>
+        <ServerStatus />
         <main className="mx-auto max-w-3xl px-5 py-10">{children}</main>
         <footer className="mx-auto max-w-3xl px-5 pb-10 text-sm text-graphite">
           Speech recognition by Gnani Prisma v2.5. Summaries by Google Gemini.
