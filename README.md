@@ -86,7 +86,6 @@ In a second terminal, from `backend/` with the venv active:
 python -m app.worker
 ```
 
-The API creates its tables on first start. Interactive docs are at http://127.0.0.1:8000/docs.
 
 **Frontend**
 
@@ -97,7 +96,6 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Open http://localhost:3000. On macOS or Linux, activate the venv with `source .venv/bin/activate` and use `cp` instead of `Copy-Item`.
 
 **Tests**
 
