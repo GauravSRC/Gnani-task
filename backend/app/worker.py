@@ -63,10 +63,9 @@ def claim_next_job() -> str | None:
 
 
 def recover_stale_jobs() -> None:
-    """Requeue jobs whose worker died mid-run (crash, redeploy, or the host
-    putting the instance to sleep). Saved chunks are kept, so a requeued job
-    resumes rather than restarts. A job that keeps dying is failed instead,
-    so one bad file can't loop forever."""
+    """Requeue jobs whose worker died without warning (a crash or an out-of-memory
+    kill). Saved chunks are kept, so a requeued job resumes rather than restarts.
+    A job that keeps dying is failed instead, so one bad file can't loop forever."""
     cutoff = _now() - STALE_AFTER
     with SessionLocal() as db:
         stmt = (
@@ -117,6 +116,23 @@ def mark_failed(recording_id: str, message: str) -> None:
         log.exception("could not record failure for %s", recording_id)
 
 
+def requeue(recording_id: str) -> None:
+    """Hand an interrupted job back to the queue. The interruption was ours, not
+    the job's, so it doesn't count towards MAX_ATTEMPTS."""
+    try:
+        with SessionLocal() as db:
+            rec = db.get(Recording, recording_id)
+            if rec is None:
+                return
+            rec.status = Status.QUEUED
+            rec.stage_detail = "Paused while the server restarted; continues automatically"
+            rec.attempts = max(0, rec.attempts - 1)
+            rec.heartbeat_at = None
+            db.commit()
+    except Exception:
+        log.exception("could not requeue %s; the stale sweep will pick it up", recording_id)
+
+
 def run_forever() -> None:
     signal.signal(signal.SIGINT, _request_stop)
     signal.signal(signal.SIGTERM, _request_stop)
@@ -141,8 +157,11 @@ def run_forever() -> None:
         log.info("job %s: started", job_id)
         started = time.monotonic()
         try:
-            pipeline.process(job_id)
+            pipeline.process(job_id, should_stop=_should_stop)
             log.info("job %s: completed in %.1fs", job_id, time.monotonic() - started)
+        except pipeline.Interrupted as exc:
+            log.info("job %s: %s; back in the queue for the next worker", job_id, exc)
+            requeue(job_id)
         except Exception as exc:
             if isinstance(exc, KNOWN_ERRORS):
                 log.warning("job %s: failed: %s", job_id, exc)
@@ -153,13 +172,18 @@ def run_forever() -> None:
     log.info("worker stopped")
 
 
+def _should_stop() -> bool:
+    return not _running
+
+
 def _request_stop(signum, frame) -> None:
-    """First Ctrl+C: finish the current job, then exit. Second: exit now."""
+    """First signal: finish the part in flight, requeue the job, then exit.
+    Second: exit immediately."""
     global _running
     if not _running:
         raise KeyboardInterrupt
     _running = False
-    log.info("stop requested; finishing the current job first (Ctrl+C again to force)")
+    log.info("stop requested; finishing the current part first (Ctrl+C again to force)")
 
 
 def _now() -> datetime:

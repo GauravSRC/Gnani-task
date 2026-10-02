@@ -112,11 +112,10 @@ class Recording(Base):
     def progress_percent(self) -> int:
         if self.status == Status.COMPLETED:
             return 100
-        if self.status == Status.QUEUED:
-            return 0
         if self.chunks_total <= 0:
-            return 5
-        # Transcription is the long part, so it owns 10-85% of the bar.
+            return 0 if self.status == Status.QUEUED else 5
+        # Transcription is the long part, so it owns 10-85% of the bar. A job
+        # requeued after a restart or a retry keeps showing the parts it finished.
         return 10 + int(75 * self.chunks_done / self.chunks_total)
 
 

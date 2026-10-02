@@ -3,8 +3,8 @@
     bucket -> 16 kHz WAV -> chunks of 30 s or less -> Gnani per chunk -> Gemini -> done
 
 Every step commits before moving on. That gives the polling frontend live
-progress, and it means a job that fails (or whose worker dies) resumes from
-the last chunk that succeeded instead of re-transcribing, and re-paying for,
+progress, and it means a job that fails, or whose worker stops, resumes from
+the last chunk that succeeded instead of re-transcribing (and re-paying for)
 the whole file.
 """
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,16 +27,28 @@ from app.models import SUPPORTED_LANGUAGES, Chunk, Recording, Status
 
 log = logging.getLogger("pipeline")
 
+ShouldStop = Callable[[], bool]
+
 
 class NoSpeechError(Exception):
     """Every chunk came back empty."""
 
 
-def process(recording_id: str) -> None:
+class Interrupted(Exception):
+    """The worker is shutting down. Everything finished so far is saved, so the
+    job goes back in the queue instead of being marked failed."""
+
+
+def _never() -> bool:
+    return False
+
+
+def process(recording_id: str, should_stop: ShouldStop = _never) -> None:
     """Run (or resume) the pipeline for one recording.
 
-    Raises on failure. Recording the failure is the caller's job, so this
-    function stays focused on the happy path.
+    Raises on failure; recording the failure is the caller's job. `should_stop`
+    is checked between parts, so a worker that is shutting down can hand the
+    job back without losing any finished work.
     """
     with SessionLocal() as db:
         rec = db.get(Recording, recording_id)
@@ -45,21 +58,23 @@ def process(recording_id: str) -> None:
 
         chunks = _load_chunks(db, rec.id)
         if chunks and all(c.is_done for c in chunks):
-            # Typical after a summary failure: no need to touch audio again.
+            # Typical after a summary failure: no need to touch the audio again.
             log.info("%s: all %d chunks already transcribed; going straight to the summary",
                      rec.id, len(chunks))
         else:
-            _transcribe(db, rec)
+            _transcribe(db, rec, should_stop)
             chunks = _load_chunks(db, rec.id)
 
         transcript = " ".join(c.text for c in chunks if c.text).strip()
         if not transcript:
             raise NoSpeechError("No speech was detected in this recording.")
 
-        # Saved before summarising, so a summary failure still leaves the
-        # user with a usable transcript.
+        # Saved before summarising, so a summary failure or a shutdown here
+        # still leaves the user with a usable transcript.
         rec.transcript = transcript
         _save(db, rec, status=Status.SUMMARIZING, detail="Writing the summary")
+        if should_stop():
+            raise Interrupted("stopped before writing the summary")
 
         language = SUPPORTED_LANGUAGES.get(rec.language_code, rec.language_code)
         try:
@@ -75,7 +90,7 @@ def process(recording_id: str) -> None:
         _save(db, rec, status=Status.COMPLETED, detail="Done")
 
 
-def _transcribe(db: Session, rec: Recording) -> None:
+def _transcribe(db: Session, rec: Recording, should_stop: ShouldStop) -> None:
     # Scratch files live only for the duration of the job.
     with tempfile.TemporaryDirectory(prefix="audionotes_", ignore_cleanup_errors=True) as tmp:
         workdir = Path(tmp)
@@ -95,11 +110,15 @@ def _transcribe(db: Session, rec: Recording) -> None:
         total = len(specs)
         rec.chunks_total = total
         rec.chunks_done = sum(1 for row in rows if row.is_done)
+        if rec.chunks_done:
+            log.info("%s: resuming at part %d of %d", rec.id, rec.chunks_done + 1, total)
         _save(db, rec, status=Status.TRANSCRIBING, detail=f"Transcribing {total} chunk(s)")
 
         for spec, row in zip(specs, rows):
             if row.is_done:
                 continue  # transcribed on an earlier attempt
+            if should_stop():
+                raise Interrupted(f"stopped before part {spec.index + 1} of {total}")
             _save(db, rec, detail=f"Transcribing chunk {spec.index + 1} of {total}")
             try:
                 text = gnani.transcribe(
